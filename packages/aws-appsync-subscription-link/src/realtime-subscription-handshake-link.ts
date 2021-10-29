@@ -2,7 +2,7 @@
  * Copyright 2017-2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
-import { ApolloLink, Observable, Operation, FetchResult } from "@apollo/client";
+import { ApolloLink, Observable, Operation, FetchResult } from "@apollo/client/core";
 
 import { rootLogger } from "./utils";
 
@@ -95,6 +95,12 @@ export class AppSyncRealTimeSubscriptionHandshakeLink extends ApolloLink {
         observer.complete();
       } else {
         const subscriptionId = uuid();
+        let token = this.auth.type === AUTH_TYPE.AMAZON_COGNITO_USER_POOLS ||
+          this.auth.type === AUTH_TYPE.OPENID_CONNECT
+          ? this.auth.jwtToken
+          : null;
+
+        token = this.auth.type === AUTH_TYPE.AWS_LAMBDA ? this.auth.token : token;
 
         const options = {
           appSyncGraphqlEndpoint: this.url,
@@ -106,11 +112,7 @@ export class AppSyncRealTimeSubscriptionHandshakeLink extends ApolloLink {
           apiKey: this.auth.type === AUTH_TYPE.API_KEY ? this.auth.apiKey : "",
           credentials:
             this.auth.type === AUTH_TYPE.AWS_IAM ? this.auth.credentials : null,
-          jwtToken:
-            this.auth.type === AUTH_TYPE.AMAZON_COGNITO_USER_POOLS ||
-              this.auth.type === AUTH_TYPE.OPENID_CONNECT
-              ? this.auth.jwtToken
-              : null
+          token
         };
 
         this._startSubscriptionWithAWSAppSyncRealTime({
@@ -236,7 +238,7 @@ export class AppSyncRealTimeSubscriptionHandshakeLink extends ApolloLink {
       region,
       graphql_headers = () => ({}),
       credentials,
-      jwtToken
+      token
     } = options;
     const subscriptionState: SUBSCRIPTION_STATUS = SUBSCRIPTION_STATUS.PENDING;
     const data = {
@@ -264,9 +266,9 @@ export class AppSyncRealTimeSubscriptionHandshakeLink extends ApolloLink {
         canonicalUri: "",
         region,
         credentials,
-        jwtToken
+        token,
+        graphql_headers
       })),
-      ...(await graphql_headers()),
       [USER_AGENT_HEADER]: USER_AGENT
     };
 
@@ -292,7 +294,7 @@ export class AppSyncRealTimeSubscriptionHandshakeLink extends ApolloLink {
         authenticationType,
         region,
         credentials,
-        jwtToken
+        token
       });
     } catch (err) {
       const { message = "" } = err;
@@ -348,7 +350,7 @@ export class AppSyncRealTimeSubscriptionHandshakeLink extends ApolloLink {
     apiKey,
     region,
     credentials,
-    jwtToken
+    token
   }): Promise<void> {
     if (this.socketStatus === SOCKET_STATUS.READY) {
       return;
@@ -374,7 +376,8 @@ export class AppSyncRealTimeSubscriptionHandshakeLink extends ApolloLink {
               appSyncGraphqlEndpoint,
               region,
               credentials,
-              jwtToken
+              token,
+              graphql_headers: () => {}
             })
           );
           const headerQs = Buffer.from(headerString).toString("base64");
@@ -414,7 +417,8 @@ export class AppSyncRealTimeSubscriptionHandshakeLink extends ApolloLink {
     apiKey,
     region,
     credentials,
-    jwtToken
+    token,
+    graphql_headers
   }) {
     const headerHandler: Record<
       string,
@@ -422,8 +426,9 @@ export class AppSyncRealTimeSubscriptionHandshakeLink extends ApolloLink {
     > = {
       API_KEY: this._awsRealTimeApiKeyHeader.bind(this),
       AWS_IAM: this._awsRealTimeIAMHeader.bind(this),
-      OPENID_CONNECT: this._awsRealTimeOPENIDHeader.bind(this),
-      AMAZON_COGNITO_USER_POOLS: this._awsRealTimeOPENIDHeader.bind(this)
+      OPENID_CONNECT: this._awsRealTimeAuthorizationHeader.bind(this),
+      AMAZON_COGNITO_USER_POOLS: this._awsRealTimeAuthorizationHeader.bind(this),
+      AWS_LAMBDA: this._awsRealTimeAuthorizationHeader.bind(this)
     };
 
     const handler = headerHandler[authenticationType];
@@ -443,28 +448,32 @@ export class AppSyncRealTimeSubscriptionHandshakeLink extends ApolloLink {
       region,
       host,
       credentials,
-      jwtToken
+      token,
+      graphql_headers
     });
 
     return result;
   }
 
-  private async _awsRealTimeOPENIDHeader({
+  private async _awsRealTimeAuthorizationHeader({
     host,
-    jwtToken
+    token,
+    graphql_headers
   }): Promise<Record<string, string>> {
     return {
       Authorization:
-        typeof jwtToken === "function"
-          ? await jwtToken.call(undefined)
-          : await jwtToken,
-      host
+        typeof token === "function"
+          ? await token.call(undefined)
+          : await token,
+      host,
+      ...(await graphql_headers())
     };
   }
 
   private async _awsRealTimeApiKeyHeader({
     apiKey,
-    host
+    host,
+    graphql_headers
   }): Promise<Record<string, string>> {
     const dt = new Date();
     const dtStr = dt.toISOString().replace(/[:\-]|\.\d{3}/g, "");
@@ -472,7 +481,8 @@ export class AppSyncRealTimeSubscriptionHandshakeLink extends ApolloLink {
     return {
       host,
       "x-amz-date": dtStr,
-      "x-api-key": apiKey
+      "x-api-key": apiKey,
+      ...(await graphql_headers()),
     };
   }
 
@@ -536,7 +546,7 @@ export class AppSyncRealTimeSubscriptionHandshakeLink extends ApolloLink {
     // Step 1: connect websocket
     try {
       await (() => {
-        return new Promise((res, rej) => {
+        return new Promise<void>((res, rej) => {
           const newSocket = AppSyncRealTimeSubscriptionHandshakeLink.createWebSocket(awsRealTimeUrl, "graphql-ws");
           newSocket.onerror = () => {
             logger(`WebSocket connection error`);

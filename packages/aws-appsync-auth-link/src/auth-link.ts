@@ -2,14 +2,14 @@
  * Copyright 2017-2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
-import { ApolloLink, Observable } from '@apollo/client';
+import { ApolloLink, Observable } from '@apollo/client/core';
 import { print } from 'graphql/language/printer';
 
 import { Signer } from './signer';
 import * as Url from 'url';
 
 import { userAgent } from "./platform";
-import { Credentials, CredentialsOptions } from 'aws-sdk/lib/credentials';
+import { Credentials, CredentialProvider } from '@aws-sdk/types';
 
 const packageInfo = require("../package.json");
 
@@ -23,6 +23,7 @@ export enum AUTH_TYPE {
     AWS_IAM = 'AWS_IAM',
     AMAZON_COGNITO_USER_POOLS = 'AMAZON_COGNITO_USER_POOLS',
     OPENID_CONNECT = 'OPENID_CONNECT',
+    AWS_LAMBDA = 'AWS_LAMBDA'
 }
 
 export class AuthLink extends ApolloLink {
@@ -113,7 +114,7 @@ type KeysWithType<O, T> = {
 type AuthOptionsNone = { type: AUTH_TYPE.NONE };
 type AuthOptionsIAM = {
     type: KeysWithType<typeof AUTH_TYPE, AUTH_TYPE.AWS_IAM>,
-    credentials: (() => Credentials | CredentialsOptions | Promise<Credentials | CredentialsOptions | null>) | Credentials | CredentialsOptions | null,
+    credentials: (() => Credentials | CredentialProvider | Promise<Credentials | CredentialProvider | null>) | Credentials | CredentialProvider | null,
 };
 type AuthOptionsApiKey = {
     type: KeysWithType<typeof AUTH_TYPE, AUTH_TYPE.API_KEY>,
@@ -123,7 +124,11 @@ type AuthOptionsOAuth = {
     type: KeysWithType<typeof AUTH_TYPE, AUTH_TYPE.AMAZON_COGNITO_USER_POOLS> | KeysWithType<typeof AUTH_TYPE, AUTH_TYPE.OPENID_CONNECT>,
     jwtToken: (() => (string | Promise<string>)) | string,
 };
-export type AuthOptions = AuthOptionsNone | AuthOptionsIAM | AuthOptionsApiKey | AuthOptionsOAuth;
+type AuthOptionsLambda = {
+    type: KeysWithType<typeof AUTH_TYPE, AUTH_TYPE.AWS_LAMBDA>,
+    token: (() => (string | Promise<string>)) | string,
+}
+export type AuthOptions = AuthOptionsNone | AuthOptionsIAM | AuthOptionsApiKey | AuthOptionsOAuth | AuthOptionsLambda;
 
 export const authLink = ({ url, region, auth: { type } = <AuthOptions>{}, auth }) => {
     return new ApolloLink((operation, forward) => {
@@ -153,6 +158,10 @@ export const authLink = ({ url, region, auth: { type } = <AuthOptions>{}, auth }
                     const { jwtToken = '' } = auth;
                     promise = headerBasedAuth({ header: 'Authorization', value: jwtToken }, operation, forward);
                     break;
+                case AUTH_TYPE.AWS_LAMBDA:
+                    const { token = '' } = auth;
+                    promise = headerBasedAuth({ header: 'Authorization', value: token }, operation, forward);
+                    break
                 default:
                     const error = new Error(`Invalid AUTH_TYPE: ${(<AuthOptions>auth).type}`);
 
